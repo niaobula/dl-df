@@ -38,6 +38,11 @@ contract DLToken is ERC20, Ownable {
     bool public buyMarketOpen = false;  // 二级市场是否开放
     uint256 public  waitBlocks = 10;
 
+    //twap
+    uint256 public constant REQUIRED_OBSERVATIONS = 5;
+    uint256[5] public priceObservations;
+    uint256 public observationIndex;
+
 
     
     IPancakeRouter public pancakeRouter;
@@ -50,7 +55,7 @@ contract DLToken is ERC20, Ownable {
     // 映射存储
     mapping(address => UserInfo) public users;
     mapping(address => bool) public isExcludedFromTax;
-    
+
     //uint256[8] private DL_MIN_FEE = [3_000 ether,10_000 ether,30_000 ether,100_000 ether,300_000 ether,1_000_000 ether,3_000_000 ether,10_000_000 ether];
     uint256[8] private DL_TOTAL_FEE = [50 ether,200 ether,1_000 ether,2_000 ether,3_000 ether,5_000 ether,10_000 ether,20_000 ether];
     uint256[8] private DL_TOTAL_FEE2 = [500 ether,1_000 ether,2_000 ether,3_000 ether,5_000 ether,5_000 ether,10_000 ether,20_000 ether];
@@ -88,13 +93,15 @@ contract DLToken is ERC20, Ownable {
 
 
         BNB_PRICE = getBNBPrice();
-
+        
         isExcludedFromTax[msg.sender] = true;
         isExcludedFromTax[address(this)] = true;
+        
     }
     
     function transfer(address recipient, uint256 amount) public override  returns (bool) {
         if (msg.sender == pancakePair || recipient == pancakePair) {
+            _updateTWAP();
             BNB_PRICE = getBNBPrice();
             amount = _calculateAndProcessTax(msg.sender, recipient, amount);
         }
@@ -105,6 +112,7 @@ contract DLToken is ERC20, Ownable {
     function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
         
         if (sender == pancakePair || recipient == pancakePair) {
+            _updateTWAP();
             BNB_PRICE = getBNBPrice();
             amount = _calculateAndProcessTax(sender, recipient, amount);
         }
@@ -135,10 +143,10 @@ contract DLToken is ERC20, Ownable {
             
             if (founderTax > 0 && interactiveContract != address(0)) {
                 _transfer(sender, interactiveContract, founderTax);
-                try IStakeContract(interactiveContract).updateFeeNodesDL(founderTax,2) {} 
+                try IStakeContract(interactiveContract).updateFeeNodesDL(founderTax,2) {}
                 catch {}
             }
-
+            
             if (foundationTax > 0 && foundationAddress != address(0)) {
                 _transfer(sender, foundationAddress, foundationTax);
             }
@@ -167,7 +175,9 @@ contract DLToken is ERC20, Ownable {
             return amount;
         }
         BNB_PRICE =   getBNBPrice();
-        uint256 poolValue = _calculatePoolValue(BNB_PRICE); //池子价值
+        //uint256 poolValue = _calculatePoolValue(BNB_PRICE); //池子价值
+        uint256 poolValue = getTWAPValue();
+
         if(poolValue > MAX_POOL_VALUE){
             MAX_POOL_VALUE  =   poolValue;
         }
@@ -204,14 +214,16 @@ contract DLToken is ERC20, Ownable {
             emit Debug(sender, recipient, poolValue, "Market status changed due to pool value");
         }
 
+        uint256 dlPrice = getCurrentPrice(); //1 dl = 0.01bnb wei
+        uint256 buyValueUSD = amount * dlPrice * BNB_PRICE / 10**36;
         if(buyMarketOpen == true){
-            
+            //最大购买量
+
+            uint256 max_buy_val = DL_TOTAL_FEE2[7];
+            require(buyValueUSD < max_buy_val, "Exceeds max buy limit");
+
         }else{
             //按额度
-            uint256 dlPrice = getCurrentPrice(); //1 dl = 0.01bnb wei
-            
-            
-            uint256 buyValueUSD = amount * dlPrice * BNB_PRICE / 10**36;
 
             require(buyValueUSD > 0, "Price too low"); // 防止除零或精度丢失
             (, , ,uint256 group_rank2) = IStakeContract(interactiveContract).getParentUserInfo(recipient);
@@ -267,6 +279,31 @@ contract DLToken is ERC20, Ownable {
         }
     }
     
+    function _updateTWAP() internal {
+        uint256 currentPoolValue = _calculatePoolValue(BNB_PRICE);
+
+        uint256 index = observationIndex % 5;
+        priceObservations[index] = currentPoolValue;
+        observationIndex++;
+    }
+    
+    function getTWAPValue() public view returns (uint256) {
+        uint256 sum = 0;
+        uint256 count = 0;
+
+        for (uint256 i = 0; i < 5; i++) {
+            if (priceObservations[i] != 0) {
+                sum += priceObservations[i];
+                count++;
+            }
+        }
+
+        if (count == 0) return 0;
+        return sum / count;
+    }
+
+
+
     function _recycleDL(uint256 amount, address to) private    {
         //require(msg.sender == interactiveContract, "Only interactive contract allowed");
         if(amount > 0){
