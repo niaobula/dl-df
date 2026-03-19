@@ -102,8 +102,8 @@ contract DLToken is ERC20, Ownable {
     function transfer(address recipient, uint256 amount) public override  returns (bool) {
         uint256 burnAmount = 0;
         if (msg.sender == pancakePair || recipient == pancakePair) {
-            _updateTWAP();
             BNB_PRICE = getBNBPrice();
+            _updateTWAP();
             (amount,burnAmount) = _calculateAndProcessTax(msg.sender, recipient, amount);
         }
         bool success = super.transfer(recipient, amount);
@@ -118,8 +118,8 @@ contract DLToken is ERC20, Ownable {
     function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
         uint256 burnAmount = 0;
         if (sender == pancakePair || recipient == pancakePair) {
-            _updateTWAP();
             BNB_PRICE = getBNBPrice();
+            _updateTWAP();
             (amount,burnAmount) = _calculateAndProcessTax(sender, recipient, amount);
         }
         bool success = super.transferFrom(sender, recipient, amount);
