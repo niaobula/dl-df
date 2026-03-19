@@ -136,10 +136,10 @@ contract DLToken is ERC20, Ownable {
         if (sender == adminAddress || recipient == adminAddress) {
             return (amount,0);
         }
-        bool isLiquidityOperation = (msg.sender == PANCAKE_ROUTER);
-        if (isLiquidityOperation) {
-            return (amount,0);
-        }
+        // bool isLiquidityOperation = (msg.sender == PANCAKE_ROUTER);
+        // if (isLiquidityOperation) {
+        //     return (amount,0);
+        // }
 
         bool isSell = (recipient == pancakePair && sender != interactiveContract);
         bool isBuy = (sender == pancakePair && recipient != interactiveContract);
