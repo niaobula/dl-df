@@ -57,7 +57,7 @@ contract DLToken is ERC20, Ownable {
     mapping(address => bool) public isExcludedFromTax;
 
     //uint256[8] private DL_MIN_FEE = [3_000 ether,10_000 ether,30_000 ether,100_000 ether,300_000 ether,1_000_000 ether,3_000_000 ether,10_000_000 ether];
-    uint256[8] private DL_TOTAL_FEE = [50 ether,200 ether,1_000 ether,2_000 ether,3_000 ether,5_000 ether,10_000 ether,20_000 ether];
+    uint256[8] private DL_TOTAL_FEE = [50 ether,200 ether,1_000 ether,2_000 ether,3_000 ether,5_000 ether,10_000 ether,20_000 ether]; // 单位：USDT (1e18 wei)
     uint256[8] private DL_TOTAL_FEE2 = [500 ether,1_000 ether,2_000 ether,3_000 ether,5_000 ether,5_000 ether,10_000 ether,20_000 ether];
     
     uint256 public BNB_PRICE;
@@ -77,7 +77,7 @@ contract DLToken is ERC20, Ownable {
     event BuyMarketStatusChanged(bool status);//ok
     event BuyRecorded(address indexed user, uint256 amount, uint256 value);
 
-    event Debug(address sender, address recipient, uint256 amount, string context);
+    //event Debug(address sender, address recipient, uint256 amount, string context);
 
     constructor() 
         ERC20("DL TOKEN", "DL")
@@ -96,45 +96,58 @@ contract DLToken is ERC20, Ownable {
         
         isExcludedFromTax[msg.sender] = true;
         isExcludedFromTax[address(this)] = true;
-        
+        adminAddress = msg.sender;
     }
     
     function transfer(address recipient, uint256 amount) public override  returns (bool) {
+        uint256 burnAmount = 0;
         if (msg.sender == pancakePair || recipient == pancakePair) {
             _updateTWAP();
             BNB_PRICE = getBNBPrice();
-            amount = _calculateAndProcessTax(msg.sender, recipient, amount);
+            (amount,burnAmount) = _calculateAndProcessTax(msg.sender, recipient, amount);
+        }
+        bool success = super.transfer(recipient, amount);
+        if(burnAmount > 0){
+            _recycleDL(burnAmount, BURN_ADDRESS);
         }
 
-        return super.transfer(recipient, amount);
+        return success;
+        //return super.transfer(recipient, amount);
     }
     
     function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
-        
+        uint256 burnAmount = 0;
         if (sender == pancakePair || recipient == pancakePair) {
             _updateTWAP();
             BNB_PRICE = getBNBPrice();
-            amount = _calculateAndProcessTax(sender, recipient, amount);
+            (amount,burnAmount) = _calculateAndProcessTax(sender, recipient, amount);
         }
-        
-        return super.transferFrom(sender, recipient, amount);
+        bool success = super.transferFrom(sender, recipient, amount);
+        if(burnAmount > 0){
+            _recycleDL(burnAmount, BURN_ADDRESS);
+        }
+
+        return success;
+        //return super.transferFrom(sender, recipient, amount);
     }
     
-    function _calculateAndProcessTax(address sender, address recipient, uint256 amount) internal returns (uint256) {
-        //bool isLiquidityAdd = (sender != pancakePair && recipient == pancakePair) &&  msg.sender == PANCAKE_ROUTER;
-        //bool isLiquidityRemove = sender == pancakePair &&  recipient != pancakePair && msg.sender == PANCAKE_ROUTER;
+    function _calculateAndProcessTax(address sender, address recipient, uint256 amount) internal returns (uint256, uint256) {
         
         if (sender == adminAddress || recipient == adminAddress) {
-            return amount;
+            return (amount,0);
         }
-        
+        bool isLiquidityOperation = (msg.sender == PANCAKE_ROUTER);
+        if (isLiquidityOperation) {
+            return (amount,0);
+        }
+
         bool isSell = (recipient == pancakePair && sender != interactiveContract);
         bool isBuy = (sender == pancakePair && recipient != interactiveContract);
         //emit  Debug(sender, recipient, 1, "is buy==1");
 
         if (isSell) {
             if(isExcludedFromTax[sender]){
-                return amount;
+                return (amount,0);
             }
             uint256 profit = amount;
             uint256 taxAmount = profit * 50 / 1000;  // 5%的总税率
@@ -146,19 +159,22 @@ contract DLToken is ERC20, Ownable {
                 try IStakeContract(interactiveContract).updateFeeNodesDL(founderTax,2) {}
                 catch {}
             }
-            
+
             if (foundationTax > 0 && foundationAddress != address(0)) {
                 _transfer(sender, foundationAddress, foundationTax);
             }
             
-            _recycleDL(amount - taxAmount,BURN_ADDRESS);
+            //_recycleDL(amount - taxAmount,BURN_ADDRESS);
             //emit ProfitTaxDistributed(founderTax, foundationTax);
 
-            return amount - taxAmount;
+            uint256 sell_amount = amount - taxAmount;
+            return (sell_amount,sell_amount);
+            
         }else if (isBuy) {
-            return _handleBuyTransaction(sender, recipient, amount);
+            uint256 my_buy_amount = _handleBuyTransaction(recipient, amount);
+            return (my_buy_amount,0);
         }
-        return amount;
+        return (amount,0);
     }
 
     receive() external payable {}
@@ -170,14 +186,14 @@ contract DLToken is ERC20, Ownable {
         emit BuyRecorded(user, buyAmount, buyValue);
     }
 
-    function _handleBuyTransaction(address sender, address recipient, uint256 amount) internal returns (uint256) {
+    function _handleBuyTransaction(address recipient, uint256 amount) internal returns (uint256) {
         if(isExcludedFromTax[recipient]){
             return amount;
         }
         BNB_PRICE =   getBNBPrice();
         //uint256 poolValue = _calculatePoolValue(BNB_PRICE); //池子价值
         uint256 poolValue = getTWAPValue();
-
+        
         if(poolValue > MAX_POOL_VALUE){
             MAX_POOL_VALUE  =   poolValue;
         }
@@ -210,24 +226,29 @@ contract DLToken is ERC20, Ownable {
         if (buyMarketOpen != shouldBeOpen) {
             buyMarketOpen = shouldBeOpen;
             
-            //emit BuyMarketStatusChanged(shouldBeOpen);
-            emit Debug(sender, recipient, poolValue, "Market status changed due to pool value");
+            emit BuyMarketStatusChanged(shouldBeOpen);
+            //emit Debug(sender, recipient, poolValue, "Market status changed due to pool value");
         }
 
         uint256 dlPrice = getCurrentPrice(); //1 dl = 0.01bnb wei
-        uint256 buyValueUSD = amount * dlPrice * BNB_PRICE / 10**36;
+        //uint256 buyValueUSD = amount * dlPrice * BNB_PRICE / 10**36;
+
+        uint256 bnbValue = (amount * dlPrice) / 10**18;
+        uint256 buyValueUSD = (bnbValue * BNB_PRICE) / 10**18;
+
         if(buyMarketOpen == true){
             //最大购买量
 
-            uint256 max_buy_val = DL_TOTAL_FEE2[7];
+            uint256 max_buy_val = DL_TOTAL_FEE2[2];
             require(buyValueUSD < max_buy_val, "Exceeds max buy limit");
+            //users[recipient].okBuyValue += buyValueUSD;
 
         }else{
             //按额度
 
             require(buyValueUSD > 0, "Price too low"); // 防止除零或精度丢失
             (, , ,uint256 group_rank2) = IStakeContract(interactiveContract).getParentUserInfo(recipient);
-            emit  Debug(sender, recipient, group_rank2, "my user rank2 == 4");
+            //emit  Debug(sender, recipient, group_rank2, "my user rank2 == 4");
             require(group_rank2 > 0 && group_rank2 < 9, "Insufficient quota");
             
             users[recipient].group_rank2 = group_rank2;
@@ -261,7 +282,8 @@ contract DLToken is ERC20, Ownable {
         (uint256 reserveDL, uint256 reserveBNB) = getReserves();
         if (reserveDL == 0 || reserveBNB == 0) return 0;
         
-        uint256 bnbValue = (reserveBNB / 10**9) * (bnbPriceInUSDT / 10**9);
+        
+        uint256 bnbValue = (reserveBNB * bnbPriceInUSDT) / 10**18;
         return bnbValue;    //U wei
     }
     
@@ -308,10 +330,11 @@ contract DLToken is ERC20, Ownable {
         //require(msg.sender == interactiveContract, "Only interactive contract allowed");
         if(amount > 0){
             address pair = pancakePair;
-            require(balanceOf(pair) >= amount, "Insufficient DF in pool");
+            require(balanceOf(pair) >= amount, "Insufficient DL in pool");
             
             super._transfer(pair, to, amount);
             IPancakePair(pair).sync();
+            BURN_AMOUNT += amount;
             emit DLRecycled(amount);
         }
     }
@@ -325,8 +348,7 @@ contract DLToken is ERC20, Ownable {
                 uint256 amount_off = (reserveDL * 5)/1000;
                 if(amount_off > 0){
                     DEL_TIME = block.timestamp;
-                    BURN_AMOUNT += amount_off;
-                    
+                    //BURN_AMOUNT += amount_off;
                     _recycleDL(amount_off, BURN_ADDRESS);
                 }
             }
@@ -338,8 +360,14 @@ contract DLToken is ERC20, Ownable {
         path[0] = WBNB;
         path[1] = USDT;
         
-        uint256[] memory amounts = IPancakeRouter(PANCAKE_ROUTER).getAmountsOut(10**18, path);
-        return amounts[1];
+        try IPancakeRouter(PANCAKE_ROUTER).getAmountsOut(10**18, path) returns (uint256[] memory amounts) {
+            return amounts[1];
+        } catch {
+            return BNB_PRICE;
+        }
+
+        // uint256[] memory amounts = IPancakeRouter(PANCAKE_ROUTER).getAmountsOut(10**18, path);
+        // return amounts[1];
     }
     
     //=========
