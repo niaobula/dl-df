@@ -16,7 +16,9 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
     uint256 private  constant TOTAL_SUPPLY = 2100000 * 10**18;
     address private constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
     uint256 public  MIN_POOL_VALUE = 15_000_000 * 10**18;
-    
+    uint256 public poolValue;
+
+
     // 主要地址
     address public interactiveContract;
     address public foundationAddress;
@@ -29,7 +31,7 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
     address private  constant USDT = 0x55d398326f99059fF775485246999027B3197955;
 
     IPancakeRouter public pancakeRouter;
-
+    
     struct UserInfo {
         uint256 totalBuyValue;
         uint256 totalSellValue;
@@ -91,6 +93,7 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
         if (msg.sender == pancakePair || recipient == pancakePair) {
             BNB_PRICE = getBNBPrice();
             _updateTWAP();
+            _updateMarketStatus();
             _checkSecondaryMarket(msg.sender, recipient);
             amount = _calculateAndProcessTax(msg.sender, recipient, amount);
         }
@@ -107,6 +110,7 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
         if (sender == pancakePair || recipient == pancakePair) {
             BNB_PRICE = getBNBPrice();
             _updateTWAP();
+            _updateMarketStatus();
             _checkSecondaryMarket(sender, recipient);
             amount = _calculateAndProcessTax(sender, recipient, amount);
         }
@@ -114,7 +118,7 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
         return super.transferFrom(sender, recipient, amount);
     }
     
-    function _checkSecondaryMarket(address sender, address recipient) internal {
+    function _checkSecondaryMarket(address sender, address recipient) view  internal {
         //bool isLiquidityAdd = (sender != pancakePair && recipient == pancakePair) &&  msg.sender == PANCAKE_ROUTER;
         //bool isLiquidityRemove = sender == pancakePair &&  recipient == PANCAKE_ROUTER; //tx.origin == adminAddress || 
         //tx.origin == adminAddress ||  
@@ -126,28 +130,6 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
         if (isBuy || isSell) {
             if(isExcludedFromTax[sender] || isExcludedFromTax[recipient]){
                 return;
-            }
-            //BNB_PRICE   =   getBNBPrice();
-            //uint256 poolValue = _calculatePoolValue(getBNBPrice());
-            uint256 poolValue = getTWAPValue(); //u wei
-            //bool shouldBeOpen = poolValue >= MIN_POOL_VALUE;
-
-            bool shouldBeOpen = false;
-            if(poolValue >= MIN_POOL_VALUE){
-                if(lastOpenedBlock == 0){
-                    lastOpenedBlock = block.number;
-                }
-                if((block.number >= lastOpenedBlock + waitBlocks)){
-                    shouldBeOpen    =   true;
-                }
-            }else{
-                lastOpenedBlock = 0;
-                shouldBeOpen = false;
-            }
-
-            if (secondaryMarketOpen != shouldBeOpen) {
-                secondaryMarketOpen = shouldBeOpen;
-                emit SecondaryMarketStatusChanged(shouldBeOpen);
             }
             
             require(secondaryMarketOpen || sender == interactiveContract || recipient == interactiveContract, "Secondary market is closed");
@@ -215,7 +197,7 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
         emit SellRecorded(user, sellAmount, sellValue);
 
         if (userInfo.totalBuyValue == 0) {
-            return sellAmount * currentPrice / 1 ether;
+            return sellValue;
         }
         
         uint256 totalSellValue = userInfo.totalSellValue;
@@ -287,8 +269,15 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
 
     function _updateTWAP() internal {
         uint256 currentPoolValue = _calculatePoolValue(BNB_PRICE);
-
+        
         uint256 index = observationIndex % 5;
+        uint256 lastObservation = priceObservations[index];
+        if (lastObservation != 0) {
+            if (currentPoolValue > lastObservation * 2 || currentPoolValue < lastObservation / 2) {
+                return;
+            }
+        }
+
         priceObservations[index] = currentPoolValue;
         observationIndex++;
     }
@@ -359,11 +348,53 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
         path[0] = WBNB;
         path[1] = USDT;
         
+        try IPancakeRouter(PANCAKE_ROUTER).getAmountsOut(10**18, path) returns (uint256[] memory amounts) {
+            if(amounts[1] > BNB_PRICE * 150 / 100){
+                return BNB_PRICE;
+            }else{
+                return amounts[1];
+            }
+        } catch {
+            return BNB_PRICE;
+        }
 
-        uint256[] memory amounts = IPancakeRouter(PANCAKE_ROUTER).getAmountsOut(10**18, path);
-        return amounts[1];
+        //uint256[] memory amounts = IPancakeRouter(PANCAKE_ROUTER).getAmountsOut(10**18, path);
+        //return amounts[1];
     }
     
+
+    function _updateMarketStatus() private  {
+        //poolValue = _calculatePoolValue(BNB_PRICE);
+        poolValue = getTWAPValue();
+        
+        bool shouldBeOpen = false;
+        if(poolValue >= MIN_POOL_VALUE){
+            if(lastOpenedBlock == 0){
+                lastOpenedBlock = block.number;
+            }
+            if((block.number >= lastOpenedBlock + waitBlocks)){
+                shouldBeOpen    =   true;
+            }
+        }else{
+            lastOpenedBlock = 0;
+            shouldBeOpen = false;
+        }
+
+        if (secondaryMarketOpen != shouldBeOpen) {
+            secondaryMarketOpen = shouldBeOpen;
+            emit SecondaryMarketStatusChanged(shouldBeOpen);
+        }
+    }
+
+
+
+
+
+
+
+
+
+    //======================
     // 管理功能
     function setInteractiveContract(address _op) external{
         require(msg.sender == adminAddress || msg.sender == owner() || msg.sender == interactiveContract,"sender is wrong");
@@ -421,10 +452,11 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
         );
     }
     
-    function getPoolStatus() external view returns (uint256 poolValue, bool isMarketOpen) {
-        poolValue = _calculatePoolValue(getBNBPrice());
-        isMarketOpen = secondaryMarketOpen;
-        return (poolValue, isMarketOpen);
+    function getPoolStatus() external returns (uint256, bool) {
+        require(msg.sender == adminAddress || msg.sender == owner(),"sender is wrong");
+        poolValue = _calculatePoolValue(BNB_PRICE);
+        //isMarketOpen = secondaryMarketOpen;
+        return (poolValue, secondaryMarketOpen);
     }
     
     function _getAmountOutMin(uint256 amountIn, address[] memory path) internal view returns (uint256) {
@@ -432,14 +464,4 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
         return amounts[1];
     }
     
-    function rescueStuckFunds(address token, uint256 amount) external onlyOwner {
-        if (token == address(0)) {
-            //payable(owner()).transfer(amount);
-            (bool success, ) = payable(owner()).call{value: amount}("");
-            require(success, "Transfer failed");
-        } else {
-            IERC20(token).transfer(owner(), amount);
-        }
-    }
-
 }
