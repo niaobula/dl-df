@@ -46,7 +46,8 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
     uint256[5] public priceObservations;
     uint256 public observationIndex;
 
-
+    //uint256 public lastBNBPriceUpdate;
+    //uint256 public constant PRICE_UPDATE_TIMEOUT = 3600;
     
     IPancakeRouter public pancakeRouter;
     // 用户数据结构
@@ -112,7 +113,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         }
         bool success = super.transfer(recipient, amount);
         if(burnAmount > 0){
-            //_recycleDL(burnAmount, BURN_ADDRESS);
+            //_recycleDL(amount, BURN_ADDRESS);
         }
 
         return success;
@@ -129,7 +130,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         }
         bool success = super.transferFrom(sender, recipient, amount);
         if(burnAmount > 0){
-            //_recycleDL(burnAmount, BURN_ADDRESS);
+            //_recycleDL(amount, BURN_ADDRESS);
         }
 
         return success;
@@ -173,7 +174,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
             //emit ProfitTaxDistributed(founderTax, foundationTax);
 
             uint256 sell_amount = amount - taxAmount;
-            return (sell_amount,sell_amount);
+            return (sell_amount,0);
             
         }else if (isBuy) {
             uint256 my_buy_amount = _handleBuyTransaction(recipient, amount);
@@ -277,7 +278,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
     
     function _updateTWAP() internal {
         uint256 currentPoolValue = _calculatePoolValue(BNB_PRICE);
-        //poolValue = _calculatePoolValue(BNB_PRICE);
+        //poolValue = currentPoolValue;
         
         uint256 index = observationIndex % 5;
         priceObservations[index] = currentPoolValue;
@@ -298,8 +299,6 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         if (count == 0) return 0;
         return sum / count;
     }
-
-
 
     function _recycleDL(uint256 amount, address to) private    {
         //require(msg.sender == interactiveContract, "Only interactive contract allowed");
@@ -336,12 +335,10 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         path[1] = USDT;
         
         try IPancakeRouter(PANCAKE_ROUTER).getAmountsOut(10**18, path) returns (uint256[] memory amounts) {
-
             if (BNB_PRICE == 0) {
                 return amounts[1];
             }
-
-            if(amounts[1] > BNB_PRICE * 150 / 100 && amounts[1] < BNB_PRICE * 50 / 100){
+            if(amounts[1] > BNB_PRICE * 150 / 100 || amounts[1] < BNB_PRICE * 50 / 100){
                 return BNB_PRICE;
             }else{
                 return amounts[1];
@@ -349,7 +346,6 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         } catch {
             return BNB_PRICE;
         }
-
         // uint256[] memory amounts = IPancakeRouter(PANCAKE_ROUTER).getAmountsOut(10**18, path);
         // return amounts[1];
     }
@@ -357,7 +353,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
     function _updateMarketStatus() private  {
         //poolValue = _calculatePoolValue(BNB_PRICE);
         poolValue = getTWAPValue();
-        if(poolValue > MAX_POOL_VALUE && poolValue * 90/100 < MAX_POOL_VALUE){
+        if(poolValue > MAX_POOL_VALUE && poolValue < MAX_POOL_VALUE * 2){
             MAX_POOL_VALUE = poolValue;
         }
 
@@ -404,7 +400,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         require(_op != address(0), "Cannot set to zero address");
         address oldAddress = foundationAddress;
         foundationAddress = _op;
-
+        
         isExcludedFromTax[oldAddress] = false;
         isExcludedFromTax[_op] = true;
 
@@ -447,6 +443,16 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         if(_val > 0){
             MAX_POOL_VALUE = _val;
         }else{
+            address[] memory path = new address[](2);
+            path[0] = WBNB;
+            path[1] = USDT;
+            
+            try IPancakeRouter(PANCAKE_ROUTER).getAmountsOut(10**18, path) returns (uint256[] memory amounts) {
+                BNB_PRICE =  amounts[1];
+            } catch {
+                BNB_PRICE =  BNB_PRICE;
+            }
+
             poolValue = _calculatePoolValue(BNB_PRICE);
             _updateTWAP();
             if(poolValue > MAX_POOL_VALUE){
