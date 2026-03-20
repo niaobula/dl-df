@@ -269,14 +269,9 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
 
     function _updateTWAP() internal {
         uint256 currentPoolValue = _calculatePoolValue(BNB_PRICE);
+        //poolValue = currentPoolValue;
         
         uint256 index = observationIndex % 5;
-        uint256 lastObservation = priceObservations[index];
-        if (lastObservation != 0) {
-            if (currentPoolValue > lastObservation * 2 || currentPoolValue < lastObservation / 2) {
-                return;
-            }
-        }
 
         priceObservations[index] = currentPoolValue;
         observationIndex++;
@@ -352,7 +347,7 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
             if (BNB_PRICE == 0) {
                 return amounts[1];
             }
-            if(amounts[1] > BNB_PRICE * 150 / 100 && amounts[1] < BNB_PRICE * 50 / 100){
+            if(amounts[1] > BNB_PRICE * 150 / 100 || amounts[1] < BNB_PRICE * 50 / 100){
                 return BNB_PRICE;
             }else{
                 return amounts[1];
