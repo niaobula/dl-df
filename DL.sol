@@ -195,7 +195,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         if(isExcludedFromTax[recipient]){
             return amount;
         }
-        BNB_PRICE =   getBNBPrice();
+        //BNB_PRICE =   getBNBPrice();
         //uint256 poolValue = _calculatePoolValue(BNB_PRICE); //池子价值 u
         //uint256 poolValue = getTWAPValue();
         
@@ -276,11 +276,11 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
     }
     
     function _updateTWAP() internal {
-        //uint256 currentPoolValue = _calculatePoolValue(BNB_PRICE);
-        poolValue = _calculatePoolValue(BNB_PRICE);
-
+        uint256 currentPoolValue = _calculatePoolValue(BNB_PRICE);
+        //poolValue = _calculatePoolValue(BNB_PRICE);
+        
         uint256 index = observationIndex % 5;
-        priceObservations[index] = poolValue;
+        priceObservations[index] = currentPoolValue;
         observationIndex++;
     }
     
@@ -351,7 +351,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
     
     function _updateMarketStatus() private  {
         //poolValue = _calculatePoolValue(BNB_PRICE);
-
+        poolValue = getTWAPValue();
         if(poolValue > MAX_POOL_VALUE && poolValue * 90/100 < MAX_POOL_VALUE){
             MAX_POOL_VALUE = poolValue;
         }
