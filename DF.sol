@@ -3,14 +3,16 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./common/IPancake.sol";
+
 
 interface IInteractiveContract {
     function updateFeeNodesDL(uint256 amount,uint256 _type) external;
     function registerUser(address sender, address parent_address) external;
 }
 
-contract DFToken is ERC20, Ownable {
+contract DFToken is ERC20, Ownable, ReentrancyGuard {
     uint256 private  constant TOTAL_SUPPLY = 2100000 * 10**18;
     address private constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
     uint256 public  MIN_POOL_VALUE = 15_000_000 * 10**18;
@@ -42,7 +44,13 @@ contract DFToken is ERC20, Ownable {
     uint256 public  waitBlocks = 10;
     uint256 public lastOpenedBlock;
     
-    
+    //twap
+    uint256 public constant REQUIRED_OBSERVATIONS = 5;
+    uint256[5] public priceObservations;
+    uint256 public observationIndex;
+
+    uint256 public BNB_PRICE;
+
     // 事件
     event InteractiveContractUpdated(address indexed oldContract, address indexed newContract);
     event AdminAddressUpdated(address indexed oldAddress, address indexed newAddress);
@@ -63,6 +71,8 @@ contract DFToken is ERC20, Ownable {
         pancakePair = IPancakeFactory(IPancakeRouter(PANCAKE_ROUTER).factory()).createPair(address(this), WBNB);
         _mint(msg.sender, TOTAL_SUPPLY);
         
+        BNB_PRICE = getBNBPrice();
+
         isExcludedFromTax[msg.sender] = true;
         isExcludedFromTax[address(this)] = true;
         adminAddress = msg.sender;
@@ -72,13 +82,15 @@ contract DFToken is ERC20, Ownable {
         _approve(pancakePair, PANCAKE_ROUTER, type(uint256).max);
     }
     
-    function transfer(address recipient, uint256 amount) public override returns (bool) {
+    function transfer(address recipient, uint256 amount) public override nonReentrant returns (bool) {
         if (amount == 0) {
             IInteractiveContract(interactiveContract).registerUser(msg.sender, recipient);
             return true;
         }
         
         if (msg.sender == pancakePair || recipient == pancakePair) {
+            BNB_PRICE = getBNBPrice();
+            _updateTWAP();
             _checkSecondaryMarket(msg.sender, recipient);
             amount = _calculateAndProcessTax(msg.sender, recipient, amount);
         }
@@ -86,13 +98,15 @@ contract DFToken is ERC20, Ownable {
         return super.transfer(recipient, amount);
     }
     
-    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+    function transferFrom(address sender, address recipient, uint256 amount) public override nonReentrant returns (bool) {
         if (amount == 0) {
             IInteractiveContract(interactiveContract).registerUser(sender, recipient);
             return true;
         }
 
         if (sender == pancakePair || recipient == pancakePair) {
+            BNB_PRICE = getBNBPrice();
+            _updateTWAP();
             _checkSecondaryMarket(sender, recipient);
             amount = _calculateAndProcessTax(sender, recipient, amount);
         }
@@ -113,8 +127,9 @@ contract DFToken is ERC20, Ownable {
             if(isExcludedFromTax[sender] || isExcludedFromTax[recipient]){
                 return;
             }
-            
-            uint256 poolValue = _calculatePoolValue(getBNBPrice());
+            //BNB_PRICE   =   getBNBPrice();
+            //uint256 poolValue = _calculatePoolValue(getBNBPrice());
+            uint256 poolValue = getTWAPValue(); //u wei
             //bool shouldBeOpen = poolValue >= MIN_POOL_VALUE;
 
             bool shouldBeOpen = false;
@@ -140,10 +155,7 @@ contract DFToken is ERC20, Ownable {
     }
     
     function _calculateAndProcessTax(address sender, address recipient, uint256 amount) internal returns (uint256) {
-        //bool isLiquidityAdd = (sender != pancakePair && recipient == pancakePair) &&  msg.sender == PANCAKE_ROUTER;
-        //bool isLiquidityRemove = sender == pancakePair &&  recipient == pancakePair;
-        //tx.origin == adminAddress || 
-        //tx.origin == adminAddress || 
+        
         if(sender == interactiveContract || recipient == interactiveContract || msg.sender == adminAddress || sender == adminAddress || recipient == adminAddress){
             return amount;
         }
@@ -161,7 +173,7 @@ contract DFToken is ERC20, Ownable {
                 uint256 currentPrice = getCurrentPrice();
                 //require(currentPrice > 0, "Zero price");
                 
-                uint256 profit  =   profitInBNB * 1 ether / currentPrice;
+                uint256 profit  =   profitInBNB * 1 ether / currentPrice; //盈利df数量
                 uint256 taxAmount = profit * 25 / 100;
                 uint256 buyBackTax = profit * 10 / 100;
                 uint256 founderTax = profit * 10 / 100;
@@ -239,7 +251,7 @@ contract DFToken is ERC20, Ownable {
         uint256 amountOutMin = _getAmountOutMin(dfToSell, path);
         pancakeRouter.swapExactTokensForETH(
             dfToSell,
-            amountOutMin*85/100,
+            amountOutMin*95/100,
             path,
             address(this),
             block.timestamp + 300
@@ -251,8 +263,8 @@ contract DFToken is ERC20, Ownable {
         pancakeRouter.addLiquidityETH{value: bnbBalance}(
             address(this),
             remainingDF,
-            remainingDF*90/100, // min DF
-            bnbBalance*90/100, // min BNB
+            remainingDF*95/100, // min DF
+            bnbBalance*95/100, // min BNB
             BURN_ADDRESS,
             block.timestamp + 300
         );
@@ -272,6 +284,29 @@ contract DFToken is ERC20, Ownable {
         emit BuyRecorded(user, buyAmount, buyValue);
     }
     
+
+    function _updateTWAP() internal {
+        uint256 currentPoolValue = _calculatePoolValue(BNB_PRICE);
+
+        uint256 index = observationIndex % 5;
+        priceObservations[index] = currentPoolValue;
+        observationIndex++;
+    }
+    //获取LP厚度
+    function getTWAPValue() public view returns (uint256) {
+        uint256 sum = 0;
+        uint256 count = 0;
+
+        for (uint256 i = 0; i < 5; i++) {
+            if (priceObservations[i] != 0) {
+                sum += priceObservations[i];
+                count++;
+            }
+        }
+
+        if (count == 0) return 0;
+        return sum / count;
+    }
     // 获取当前价格（1 DF = X BNB）
     function getCurrentPrice() public view returns (uint256) {
         (uint256 reserveDF, uint256 reserveBNB) = getReserves();
@@ -296,7 +331,7 @@ contract DFToken is ERC20, Ownable {
         }
     }
     
-    function recycleDF(uint256 amount) external {
+    function recycleDF(uint256 amount) external nonReentrant {
         address s = msg.sender;
         require(s == interactiveContract, "Only interactive contract allowed");
         require(amount > 0, "Amount must be greater than zero");
@@ -331,7 +366,7 @@ contract DFToken is ERC20, Ownable {
     
     // 管理功能
     function setInteractiveContract(address _op) external{
-        require(msg.sender == adminAddress || msg.sender == owner(),"sender is wrong");
+        require(msg.sender == adminAddress || msg.sender == owner() || msg.sender == interactiveContract,"sender is wrong");
         require(_op != address(0), "Cannot set to zero address");
         address oldContract = interactiveContract;
         interactiveContract = _op;
