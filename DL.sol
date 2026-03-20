@@ -112,7 +112,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         }
         bool success = super.transfer(recipient, amount);
         if(burnAmount > 0){
-            _recycleDL(burnAmount, BURN_ADDRESS);
+            //_recycleDL(burnAmount, BURN_ADDRESS);
         }
 
         return success;
@@ -129,7 +129,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         }
         bool success = super.transferFrom(sender, recipient, amount);
         if(burnAmount > 0){
-            _recycleDL(burnAmount, BURN_ADDRESS);
+            //_recycleDL(burnAmount, BURN_ADDRESS);
         }
 
         return success;
@@ -169,7 +169,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
                 _transfer(sender, foundationAddress, foundationTax);
             }
             
-            //_recycleDL(amount - taxAmount,BURN_ADDRESS);
+            _recycleDL(amount,BURN_ADDRESS);
             //emit ProfitTaxDistributed(founderTax, foundationTax);
 
             uint256 sell_amount = amount - taxAmount;
