@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./common/IPancake.sol";
 
 
@@ -11,13 +12,15 @@ interface IStakeContract {
     function getParentUserInfo(address user) external view returns( address my_address, uint256 is_jihuo, uint256 is_jihuo_p,uint256 group_rank2 );
 }
 
-contract DLToken is ERC20, Ownable {
+contract DLToken is ERC20, Ownable, ReentrancyGuard {
     uint256 private  constant TOTAL_SUPPLY = 210000000 * 10**18;
     uint256 private constant MIN_POOL_VALUE = 2_000_000 * 10**18;
     uint256 private constant MIN_POOL_VALUE2 = 1_500_000 * 10**18;
-    uint256 public MAX_POOL_VALUE;
+    uint256 public MAX_POOL_VALUE = 100000 ether;
     address private constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
-    
+    uint256 public poolValue;
+
+
     address public interactiveContract;
     address public foundationAddress;
     address public pancakePair;
@@ -99,11 +102,12 @@ contract DLToken is ERC20, Ownable {
         adminAddress = msg.sender;
     }
     
-    function transfer(address recipient, uint256 amount) public override  returns (bool) {
+    function transfer(address recipient, uint256 amount) public override nonReentrant returns (bool) {
         uint256 burnAmount = 0;
         if (msg.sender == pancakePair || recipient == pancakePair) {
             BNB_PRICE = getBNBPrice();
             _updateTWAP();
+            _updateMarketStatus();
             (amount,burnAmount) = _calculateAndProcessTax(msg.sender, recipient, amount);
         }
         bool success = super.transfer(recipient, amount);
@@ -115,11 +119,12 @@ contract DLToken is ERC20, Ownable {
         //return super.transfer(recipient, amount);
     }
     
-    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+    function transferFrom(address sender, address recipient, uint256 amount) public override nonReentrant returns (bool) {
         uint256 burnAmount = 0;
         if (sender == pancakePair || recipient == pancakePair) {
             BNB_PRICE = getBNBPrice();
             _updateTWAP();
+            _updateMarketStatus();
             (amount,burnAmount) = _calculateAndProcessTax(sender, recipient, amount);
         }
         bool success = super.transferFrom(sender, recipient, amount);
@@ -191,43 +196,12 @@ contract DLToken is ERC20, Ownable {
             return amount;
         }
         BNB_PRICE =   getBNBPrice();
-        //uint256 poolValue = _calculatePoolValue(BNB_PRICE); //池子价值
-        uint256 poolValue = getTWAPValue();
+        //uint256 poolValue = _calculatePoolValue(BNB_PRICE); //池子价值 u
+        //uint256 poolValue = getTWAPValue();
         
-        if(poolValue > MAX_POOL_VALUE){
-            MAX_POOL_VALUE  =   poolValue;
-        }
-
-        bool isCurrentlyQualified = false;
-        if(poolValue >= MIN_POOL_VALUE){
-            isCurrentlyQualified = true;
-        }else if(MAX_POOL_VALUE >= MIN_POOL_VALUE && poolValue >= MIN_POOL_VALUE2){
-            isCurrentlyQualified = true;
-        }
-        
-        bool shouldBeOpen = false;
-        if (isCurrentlyQualified) {
-            if(lastOpenedBlock == 0){
-                lastOpenedBlock = block.number;
-            }
-            if((block.number >= lastOpenedBlock + waitBlocks)){
-                shouldBeOpen    =   true;
-            }
-        } else {
-            lastOpenedBlock = 0;
-            shouldBeOpen = false;
-        }
-
         if (!isExcludedFromTax[recipient] && recipient.code.length == 0) {
             require(block.timestamp >= lastBuyTime[recipient] + coolDownTime, "Please wait for cooldown");
             lastBuyTime[recipient] = block.timestamp;
-        }
-        
-        if (buyMarketOpen != shouldBeOpen) {
-            buyMarketOpen = shouldBeOpen;
-            
-            emit BuyMarketStatusChanged(shouldBeOpen);
-            //emit Debug(sender, recipient, poolValue, "Market status changed due to pool value");
         }
 
         uint256 dlPrice = getCurrentPrice(); //1 dl = 0.01bnb wei
@@ -302,10 +276,11 @@ contract DLToken is ERC20, Ownable {
     }
     
     function _updateTWAP() internal {
-        uint256 currentPoolValue = _calculatePoolValue(BNB_PRICE);
+        //uint256 currentPoolValue = _calculatePoolValue(BNB_PRICE);
+        poolValue = _calculatePoolValue(BNB_PRICE);
 
         uint256 index = observationIndex % 5;
-        priceObservations[index] = currentPoolValue;
+        priceObservations[index] = poolValue;
         observationIndex++;
     }
     
@@ -339,7 +314,7 @@ contract DLToken is ERC20, Ownable {
         }
     }
     
-    function delDl() external {
+    function delDl() external nonReentrant {
         require(msg.sender == interactiveContract || msg.sender == adminAddress,"no permission");
         (uint256 reserveDL,) = getReserves();
         if(reserveDL > AMOUNT_STOP){
@@ -361,7 +336,11 @@ contract DLToken is ERC20, Ownable {
         path[1] = USDT;
         
         try IPancakeRouter(PANCAKE_ROUTER).getAmountsOut(10**18, path) returns (uint256[] memory amounts) {
-            return amounts[1];
+            if(amounts[1] > BNB_PRICE * 150 / 100){
+                return BNB_PRICE;
+            }else{
+                return amounts[1];
+            }
         } catch {
             return BNB_PRICE;
         }
@@ -370,6 +349,40 @@ contract DLToken is ERC20, Ownable {
         // return amounts[1];
     }
     
+    function _updateMarketStatus() private  {
+        //poolValue = _calculatePoolValue(BNB_PRICE);
+
+        if(poolValue > MAX_POOL_VALUE && poolValue * 90/100 < MAX_POOL_VALUE){
+            MAX_POOL_VALUE = poolValue;
+        }
+
+        bool isCurrentlyQualified = false;
+        if(poolValue >= MIN_POOL_VALUE){
+            isCurrentlyQualified = true;
+        } else if (MAX_POOL_VALUE >= MIN_POOL_VALUE && poolValue >= MIN_POOL_VALUE2){
+            isCurrentlyQualified = true;
+        }
+
+        if (isCurrentlyQualified) {
+            if (lastOpenedBlock == 0) {
+                lastOpenedBlock = block.number;
+            }
+            if (block.number >= lastOpenedBlock + waitBlocks) {
+                if (!buyMarketOpen) {
+                    buyMarketOpen = true;
+                    emit BuyMarketStatusChanged(true);
+                }
+            }
+        } else {
+            lastOpenedBlock = 0;
+            if (buyMarketOpen) {
+                buyMarketOpen = false;
+                emit BuyMarketStatusChanged(false);
+            }
+        }
+    }
+
+
     //=========
     function setInteractiveContract(address _op) external  {
         require(msg.sender == adminAddress || msg.sender == owner() || msg.sender == interactiveContract,"sender is wrong");
@@ -423,6 +436,19 @@ contract DLToken is ERC20, Ownable {
 
         pancakePair = _op;
     }
+
+    function synMaxPoolValue(uint256 _val) external {
+        require(msg.sender == adminAddress || msg.sender == owner(),"sender is wrong");
+        if(_val > 0){
+            MAX_POOL_VALUE = _val;
+        }else{
+            poolValue = _calculatePoolValue(BNB_PRICE);
+            if(poolValue > MAX_POOL_VALUE){
+                MAX_POOL_VALUE = poolValue;
+            }
+        }
+    }
+
 
     function getUserInfo(address user) external view returns (uint256 allBuyValue, uint256 rank) {
 
