@@ -102,7 +102,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         adminAddress = msg.sender;
     }
     
-    function transfer(address recipient, uint256 amount) public override nonReentrant returns (bool) {
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
         uint256 burnAmount = 0;
         if (msg.sender == pancakePair || recipient == pancakePair) {
             BNB_PRICE = getBNBPrice();
@@ -119,7 +119,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         //return super.transfer(recipient, amount);
     }
     
-    function transferFrom(address sender, address recipient, uint256 amount) public override nonReentrant returns (bool) {
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
         uint256 burnAmount = 0;
         if (sender == pancakePair || recipient == pancakePair) {
             BNB_PRICE = getBNBPrice();
@@ -336,7 +336,12 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
         path[1] = USDT;
         
         try IPancakeRouter(PANCAKE_ROUTER).getAmountsOut(10**18, path) returns (uint256[] memory amounts) {
-            if(amounts[1] > BNB_PRICE * 150 / 100){
+
+            if (BNB_PRICE == 0) {
+                return amounts[1];
+            }
+
+            if(amounts[1] > BNB_PRICE * 150 / 100 && amounts[1] < BNB_PRICE * 50 / 100){
                 return BNB_PRICE;
             }else{
                 return amounts[1];
