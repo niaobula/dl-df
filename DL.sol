@@ -443,6 +443,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
             MAX_POOL_VALUE = _val;
         }else{
             poolValue = _calculatePoolValue(BNB_PRICE);
+            _updateTWAP();
             if(poolValue > MAX_POOL_VALUE){
                 MAX_POOL_VALUE = poolValue;
             }
