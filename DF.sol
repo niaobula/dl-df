@@ -31,7 +31,7 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
     address private  constant USDT = 0x55d398326f99059fF775485246999027B3197955;
 
     IPancakeRouter public pancakeRouter;
-    
+
     struct UserInfo {
         uint256 totalBuyValue;
         uint256 totalSellValue;
@@ -84,7 +84,7 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
         _approve(pancakePair, PANCAKE_ROUTER, type(uint256).max);
     }
     
-    function transfer(address recipient, uint256 amount) public override nonReentrant returns (bool) {
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
         if (amount == 0) {
             IInteractiveContract(interactiveContract).registerUser(msg.sender, recipient);
             return true;
@@ -101,7 +101,7 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
         return super.transfer(recipient, amount);
     }
     
-    function transferFrom(address sender, address recipient, uint256 amount) public override nonReentrant returns (bool) {
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
         if (amount == 0) {
             IInteractiveContract(interactiveContract).registerUser(sender, recipient);
             return true;
@@ -349,7 +349,10 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
         path[1] = USDT;
         
         try IPancakeRouter(PANCAKE_ROUTER).getAmountsOut(10**18, path) returns (uint256[] memory amounts) {
-            if(amounts[1] > BNB_PRICE * 150 / 100){
+            if (BNB_PRICE == 0) {
+                return amounts[1];
+            }
+            if(amounts[1] > BNB_PRICE * 150 / 100 && amounts[1] < BNB_PRICE * 50 / 100){
                 return BNB_PRICE;
             }else{
                 return amounts[1];
@@ -455,6 +458,7 @@ contract DFToken is ERC20, Ownable, ReentrancyGuard {
     function getPoolStatus() external returns (uint256, bool) {
         require(msg.sender == adminAddress || msg.sender == owner(),"sender is wrong");
         poolValue = _calculatePoolValue(BNB_PRICE);
+        _updateTWAP();
         //isMarketOpen = secondaryMarketOpen;
         return (poolValue, secondaryMarketOpen);
     }
