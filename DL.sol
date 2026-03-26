@@ -228,8 +228,6 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
             lastBuyBlock[recipient] = block.number;
         }
 
-        
-
         // require(
         //     recipient.code.length == 0 || 
         //     recipient == interactiveContract,
@@ -313,7 +311,7 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
             uint256 maxSellAmount = balanceOf(pancakePair) / MAX_SELL_POOL_RATIO;
             require(amount <= maxSellAmount,"amount too max");
         }
-
+        
         if(isExcludedFromTax[sender]){
             return amount;
         }
@@ -491,13 +489,12 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
     
     function _recycleDL(uint256 amount, address to) private {
         require(!emergencyPause, "Emergency pause active");
+
         if(amount > 0){
             uint256 max_burn = balanceOf(pancakePair) / 100;
-
             if(amount > max_burn){
                 amount = max_burn;
             }
-            
             //_approve(pancakePair, PANCAKE_ROUTER, amount);
             //IERC20(address(this)).approve(address(this), amount);
             super._transfer(pancakePair, to, amount);
@@ -506,13 +503,13 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
 
             BURN_AMOUNT += amount;
             emit DLRecycled(amount);
-        }   
+        }
     }
     
     function delDl() external nonReentrant {
         require(msg.sender == interactiveContract || msg.sender == adminAddress,"no permission");
-        //(uint256 reserveDL,) = getReserves();
-        uint256 reserveDL = balanceOf(address(this));
+        (uint256 reserveDL,) = getReserves();
+        //uint256 reserveDL = balanceOf(address(this));
         if(reserveDL > AMOUNT_STOP){
             uint256 del_day = (block.timestamp - DEL_TIME)/ 1 days;
             if(del_day > 0){
