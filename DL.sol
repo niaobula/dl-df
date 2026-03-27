@@ -63,9 +63,12 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
     
     uint256 public MAX_SELL_POOL_RATIO = 50;  //浮动2%
     uint256 public MAX_BUY_POOL_RATIO = 50;
+    uint256 public MAX_BLOCK_PERCENT = 50;
+    uint256 public MAX_DESTROY_PER_DAY = 50; //每日最大销毁2%
 
     uint256 public SYN_TWAP_TIME = block.timestamp;
-
+    uint256 public lastDestroyDay;
+    uint256 public destroyedToday;
 
     //每日限额
     uint256 public dailyLimitPercent = 10;
@@ -74,6 +77,11 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
     uint256 public dailyBuyAmount;
     uint256 public lastDailyReset;
 
+
+    uint256 public lastBlock;
+    uint256 public blockTotalBuy;
+    uint256 public blockTotalSell;
+    
 
 
     bool public emergencyPause = false;
@@ -249,7 +257,8 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
             uint256 maxBuyAmount = balanceOf(pancakePair) / MAX_BUY_POOL_RATIO;
             require(amount <= maxBuyAmount,"amount too max");
         }
-        
+        _checkBlockLimit(amount, true);
+
         if(isExcludedFromTax[recipient]){
             return amount;
         }
@@ -311,6 +320,8 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
             uint256 maxSellAmount = balanceOf(pancakePair) / MAX_SELL_POOL_RATIO;
             require(amount <= maxSellAmount,"amount too max");
         }
+        
+        _checkBlockLimit(amount, false);
         
         if(isExcludedFromTax[sender]){
             return amount;
@@ -489,23 +500,64 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
     
     function _recycleDL(uint256 amount, address to) private {
         require(!emergencyPause, "Emergency pause active");
-
         if(amount > 0){
-            uint256 max_burn = balanceOf(pancakePair) / 100;
+            bool beforeCheckPass = _checkDestroyPrice(10);
+            if(!beforeCheckPass) {
+                emit Debug("Before destroy price check failed", amount);
+                return;
+            }
+
+            uint256 max_burn = balanceOf(pancakePair) / 200;
             if(amount > max_burn){
                 amount = max_burn;
             }
-            //_approve(pancakePair, PANCAKE_ROUTER, amount);
-            //IERC20(address(this)).approve(address(this), amount);
-            super._transfer(pancakePair, to, amount);
-            IPancakePair(pancakePair).sync();
-            //_approve(pancakePair, PANCAKE_ROUTER, 0);
 
-            BURN_AMOUNT += amount;
-            emit DLRecycled(amount);
+            uint256 currentDay = block.timestamp / 1 days;
+            if (currentDay != lastDestroyDay) {
+                lastDestroyDay = currentDay;
+                destroyedToday = 0;
+            }
+            uint256 maxPerDay = balanceOf(pancakePair) / MAX_DESTROY_PER_DAY; // 2%
+            //require(destroyedToday + amount <= maxPerDay, "Destroy amount too large per day");
+
+            if(destroyedToday + amount <= maxPerDay){
+                //_approve(pancakePair, PANCAKE_ROUTER, amount);
+                //IERC20(address(this)).approve(address(this), amount);
+                super._transfer(pancakePair, to, amount);
+                IPancakePair(pancakePair).sync();
+                //_approve(pancakePair, PANCAKE_ROUTER, 0);
+                
+                bool afterCheckPass = _checkDestroyPrice(15);
+                if(!afterCheckPass) {
+                    //emergencyPause = true;
+                    emit Debug("Destroy caused price anomaly, emergency pause triggered", 1);
+                }
+                
+                destroyedToday += amount;
+                BURN_AMOUNT += amount;
+                emit DLRecycled(amount);
+            }
         }
     }
-    
+    function _checkDestroyPrice(uint256 maxDeviation) internal view returns(bool) {
+        (uint256 reserveDL, uint256 reserveBNB) = getReserves();
+        if (reserveDL == 0 || reserveBNB == 0) return false;
+        
+        uint256 currentPrice = getCurrentPrice();
+        uint256 twapPrice = getTWAPPrice();
+        if(twapPrice == 0 || currentPrice == 0){
+            return false;
+        }
+
+        uint256 maxPrice = twapPrice * (100 + maxDeviation) / 100;
+        uint256 minPrice = twapPrice * (100 - maxDeviation) / 100;
+        
+        if(currentPrice > maxPrice || currentPrice < minPrice){
+            return false;
+        }
+
+        return true;
+    }
     function delDl() external nonReentrant {
         require(msg.sender == interactiveContract || msg.sender == adminAddress,"no permission");
         (uint256 reserveDL,) = getReserves();
@@ -626,7 +678,24 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
             dailyLimit = (poolBalance * dailyLimitPercent) / 100;
         }
     }
+    function _checkBlockLimit(uint256 amount, bool isBuy) internal {
+        if (block.number != lastBlock) {
+            lastBlock = block.number;
+            blockTotalBuy = 0;
+            blockTotalSell = 0;
+        }
 
+        uint256 poolBal = balanceOf(pancakePair);
+        uint256 maxAmount = poolBal / MAX_BLOCK_PERCENT;
+
+        if (isBuy) {
+            blockTotalBuy += amount;
+            require(blockTotalBuy <= maxAmount, "Block buy overflow");
+        } else {
+            blockTotalSell += amount;
+            require(blockTotalSell <= maxAmount, "Block sell overflow");
+        }
+    }
     //=========
     function setInteractiveContract(address _op) external  {
         require(msg.sender == adminAddress || msg.sender == owner(),"sender is wrong");
@@ -673,9 +742,11 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
             maxSellValueUSD = _amount;
             emit Debug("setMaxSellValueUSD", _amount);
         }else if(_type == 3){
+            require(_amount >= 2, "MAX_BUY_POOL_RATIO too small");
             MAX_BUY_POOL_RATIO =   _amount;
             emit Debug("MAX_BUY_POOL_RATIO", _amount);
         }else if(_type == 4){
+            require(_amount >= 2, "MAX_SELL_POOL_RATIO too small");
             MAX_SELL_POOL_RATIO =   _amount;
             emit Debug("MAX_SELL_POOL_RATIO", _amount);
         }else if(_type == 5){
@@ -695,6 +766,14 @@ contract DLToken is ERC20, Ownable, ReentrancyGuard {
             dailyLimit = (poolBalance * dailyLimitPercent) / 100;
             
             emit Debug("_resetDailyIfNeeded", _amount);
+        }else if(_type == 7){
+            require(_amount >= 2, "MAX_BLOCK_PERCENT too small");
+            MAX_BLOCK_PERCENT =   _amount;
+            emit Debug("MAX_BLOCK_PERCENT", _amount);
+        }else if(_type == 8){
+            require(_amount >= 2, "MAX_DESTROY_PER_DAY too small");
+            MAX_DESTROY_PER_DAY =   _amount;
+            emit Debug("MAX_DESTROY_PER_DAY", _amount);
         }
     }
 
